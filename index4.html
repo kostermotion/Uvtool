@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UV Video Texture Compositor (4K Pro)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/h264-mp4-encoder@1.0.12/emdist/h264-mp4-encoder.web.js"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen p-8">
+
+    <div class="max-w-6xl mx-auto">
+        <header class="mb-8 border-b border-gray-800 pb-4">
+            <h1 class="text-3xl font-bold text-red-500">UV Video Texture Compositor</h1>
+            <p class="text-gray-400 mt-2">Production-grade tool. Supports 4096×4096 square texturing mapped strictly at 10 Mbps.</p>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div class="bg-gray-800 p-6 rounded-xl shadow-lg space-y-6 h-fit">
+                <h2 class="text-xl font-semibold border-b border-gray-700 pb-2">1. Upload Files</h2>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-400 mb-2">Base Texture (UV Map Layout)</label>
+                    <input type="file" id="imageInput" accept="image/*" class="block w-full text-sm text-gray-450 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-red-650 file:text-white hover:file:bg-red-700 cursor-pointer">
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-400 mb-2">Video Asset</label>
+                    <input type="file" id="videoInput" accept="video/*" class="block w-full text-sm text-gray-450 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-red-650 file:text-white hover:file:bg-red-700 cursor-pointer">
+                </div>
+
+                <h2 class="text-xl font-semibold border-b border-gray-700 pb-2 pt-2">2. Zone Coordinates (Pixels)</h2>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Offset X (Left)</label>
+                        <input type="number" id="posX" value="0" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-white">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Offset Y (Top)</label>
+                        <input type="number" id="posY" value="350" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-white">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Width (W)</label>
+                        <input type="number" id="posW" value="435" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-white">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Height (H)</label>
+                        <input type="number" id="posH" value="230" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-white">
+                    </div>
+                </div>
+
+                <div class="bg-gray-750 p-3 rounded text-xs text-gray-400 space-y-2">
+                    <p>🔄 <span class="text-red-400 font-semibold">Auto-Inversion:</span> The video will automatically flip horizontally and vertically (180°) inside the zone.</p>
+                    <p id="textureInfo">Texture Size: Not loaded</p>
+                </div>
+
+                <button id="recordBtn" disabled class="w-full py-3 px-4 bg-gray-600 text-gray-400 font-bold rounded-lg cursor-not-allowed transition duration-200">
+                    Compile MP4
+                </button>
+                <div id="statusUpdate" class="text-center text-sm font-medium text-red-400 hidden whitespace-pre-wrap bg-gray-900 p-3 rounded border border-gray-700">Loading Core Modules...</div>
+            </div>
+
+            <div class="lg:col-span-2 bg-gray-800 p-6 rounded-xl shadow-lg flex flex-col items-center justify-center">
+                <h2 class="text-xl font-semibold border-b border-gray-700 pb-2 w-full mb-4 text-left">UV Map Canvas Preview</h2>
+                <div class="relative max-w-full max-h-[70vh] overflow-auto border-2 border-dashed border-gray-700 rounded-lg p-2 bg-gray-950">
+                    <canvas id="previewCanvas" class="max-w-full h-auto block mx-auto"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const imageInput = document.getElementById('imageInput');
+        const videoInput = document.getElementById('videoInput');
+        const canvas = document.getElementById('previewCanvas');
+        const ctx = canvas.getContext('2d');
+        const recordBtn = document.getElementById('recordBtn');
+        const statusUpdate = document.getElementById('statusUpdate');
+        const textureInfo = document.getElementById('textureInfo');
+
+        const inpX = document.getElementById('posX');
+        const inpY = document.getElementById('posY');
+        const inpW = document.getElementById('posW');
+        const inpH = document.getElementById('posH');
+
+        let bgImage = new Image();
+        let video = document.createElement('video');
+        video.muted = true;
+        video.loop = true;
+        video.playsInline = true;
+
+        let isImageLoaded = false;
+        let isVideoLoaded = false;
+        let isRecording = false; 
+        let animationFrameId = null;
+
+        function checkReady() {
+            if (isImageLoaded && isVideoLoaded) {
+                recordBtn.disabled = false;
+                recordBtn.classList.remove('bg-gray-600', 'text-gray-400', 'cursor-not-allowed');
+                recordBtn.classList.add('bg-red-600', 'text-white', 'hover:bg-red-500');
+            }
+        }
+
+        // Reliable loop wrapper
+        function startPreviewLoop() {
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+            animationFrameId = requestAnimationFrame(drawFrame);
+        }
+
+        function drawFrame() {
+            if (!isImageLoaded) {
+                animationFrameId = requestAnimationFrame(drawFrame);
+                return;
+            }
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(bgImage, 0, 0);
+
+            const x = parseInt(inpX.value) || 0;
+            const y = parseInt(inpY.value) || 0;
+            const w = parseInt(inpW.value) || 100;
+            const h = parseInt(inpH.value) || 100;
+
+            if (isVideoLoaded) {
+                ctx.save();
+                ctx.translate(x + w / 2, y + h / 2);
+                ctx.scale(-1, -1); 
+                ctx.drawImage(video, -w / 2, -h / 2, w, h);
+                ctx.restore();
+            }
+
+            if (!isRecording) {
+                const baseScale = canvas.width;
+                const dynamicLineWidth = Math.max(3, Math.round(baseScale * 0.002));
+                const dynamicFontSize = Math.max(16, Math.round(baseScale * 0.015));
+
+                if (!isVideoLoaded) {
+                    ctx.fillStyle = 'rgba(239, 68, 68, 0.35)';
+                    ctx.fillRect(x, y, w, h);
+                    ctx.fillStyle = '#ef4444';
+                    ctx.font = `bold ${dynamicFontSize}px sans-serif`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText('Video Integration Zone', x + w / 2, y + h / 2);
+                }
+                ctx.strokeStyle = '#ef4444';
+                ctx.lineWidth = dynamicLineWidth;
+                ctx.setLineDash([Math.round(baseScale * 0.005), Math.round(baseScale * 0.003)]);
+                ctx.strokeRect(x, y, w, h);
+                ctx.setLineDash([]);
+            }
+
+            if (!isRecording) {
+                animationFrameId = requestAnimationFrame(drawFrame);
+            }
+        }
+
+        function renderSingleCleanFrame() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(bgImage, 0, 0);
+
+            const x = parseInt(inpX.value) || 0;
+            const y = parseInt(inpY.value) || 0;
+            const w = parseInt(inpW.value) || 100;
+            const h = parseInt(inpH.value) || 100;
+
+            ctx.save();
+            ctx.translate(x + w / 2, y + h / 2);
+            ctx.scale(-1, -1);
+            ctx.drawImage(video, -w / 2, -h / 2, w, h);
+            ctx.restore();
+        }
+
+        imageInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                bgImage.src = event.target.result;
+                bgImage.onload = () => {
+                    canvas.width = bgImage.naturalWidth % 2 === 0 ? bgImage.naturalWidth : bgImage.naturalWidth - 1;
+                    canvas.height = bgImage.naturalHeight % 2 === 0 ? bgImage.naturalHeight : bgImage.naturalHeight - 1;
+                    
+                    textureInfo.innerText = `Texture Size: ${canvas.width}x${canvas.height} px`;
+                    
+                    inpX.value = 0;
+                    inpY.value = Math.round(canvas.height * 0.34);
+                    inpW.value = Math.round(canvas.width * 0.425);
+                    inpH.value = Math.round(canvas.height * 0.225);
+
+                    isImageLoaded = true;
+                    startPreviewLoop();
+                    checkReady();
+                };
+            };
+            reader.readAsDataURL(file);
+        });
+
+        videoInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const url = URL.createObjectURL(file);
+            video.src = url;
+            video.onloadeddata = () => {
+                video.play();
+                isVideoLoaded = true;
+                startPreviewLoop();
+                checkReady();
+            };
+        });
+
+        [inpX, inpY, inpW, inpH].forEach(input => {
+            input.addEventListener('input', () => {
+                if (!isRecording && isImageLoaded) startPreviewLoop();
+            });
+        });
+
+        // Start loop immediately to listen for state changes
+        startPreviewLoop();
+
+        // High-Fidelity 4K asynchronous rendering pass
+        recordBtn.addEventListener('click', async () => {
+            if (!isImageLoaded || !isVideoLoaded) return;
+
+            isRecording = true;
+            recordBtn.disabled = true;
+            statusUpdate.classList.remove('hidden');
+            statusUpdate.innerText = "Spawning 4K Software Encoder Modules Layout...";
+            
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+            video.pause();
+
+            const fps = 30;
+            const duration = video.duration;
+            const totalFrames = Math.floor(duration * fps);
+
+            try {
+                // Initialize the pure software WebAssembly layer
+                const encoder = await H264MP4Encoder.create();
+                encoder.width = canvas.width;
+                encoder.height = canvas.height;
+                encoder.frameRate = fps;
+                encoder.kbps = 10000; // Strictly locked at 10 Mbps production rate profile
+                encoder.initialize();
+
+                for (let i = 0; i < totalFrames; i++) {
+                    video.currentTime = i / fps;
+
+                    await new Promise((resolve) => {
+                        video.onseeked = resolve;
+                    });
+
+                    renderSingleCleanFrame();
+
+                    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    encoder.addFrameRGBA(imageData.data);
+
+                    const progress = Math.round((i / totalFrames) * 100);
+                    statusUpdate.innerText = `Compiling 4K Map (10Mbps): ${progress}%`;
+
+                    // CRITICAL FIX: Explicitly yield main thread execution to allow DOM repaints
+                    await new Promise(resolve => setTimeout(resolve, 5));
+                }
+
+                statusUpdate.innerText = "Finalizing master MP4 container structure...";
+                await new Promise(resolve => setTimeout(resolve, 100));
+                
+                encoder.finalize();
+                const uint8Array = encoder.output();
+                const blob = new Blob([uint8Array], { type: 'video/mp4' });
+                const url = URL.createObjectURL(blob);
+
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `compiled_4k_texture_10mbps.mp4`;
+                a.click();
+
+            } catch (error) {
+                console.error(error);
+                alert("Processing failed: " + error.message);
+            }
+
+            // Restore preview UI systems
+            isRecording = false;
+            video.loop = true;
+            video.play();
+            startPreviewLoop();
+
+            recordBtn.disabled = false;
+            statusUpdate.classList.add('hidden');
+        });
+    </script>
+</body>
+</html>
