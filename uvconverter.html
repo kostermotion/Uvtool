@@ -58,7 +58,7 @@
                 <button id="recordBtn" disabled class="w-full py-3 px-4 bg-gray-600 text-gray-400 font-bold rounded-lg cursor-not-allowed transition duration-200">
                     Compile MP4
                 </button>
-                <div id="statusUpdate" class="text-center text-sm font-medium text-red-400 hidden whitespace-pre-wrap bg-gray-900 p-3 rounded border border-gray-700">Preparing Hardware Encoder...</div>
+                <div id="statusUpdate" class="text-center text-sm font-medium text-red-400 hidden whitespace-pre-wrap bg-gray-900 p-3 rounded border border-gray-700">Analyzing System Codecs...</div>
             </div>
 
             <div class="lg:col-span-2 bg-gray-800 p-6 rounded-xl shadow-lg flex flex-col items-center justify-center">
@@ -211,11 +211,11 @@
             statusUpdate.classList.remove('hidden');
             statusUpdate.classList.remove('text-red-400');
             statusUpdate.classList.add('text-yellow-400');
-            statusUpdate.innerText = "Initializing Hardware Encoder...";
+            statusUpdate.innerText = "Probing System Hardware Codecs...";
 
             if (!window.VideoEncoder) {
                 statusUpdate.classList.replace('text-yellow-400', 'text-red-400');
-                statusUpdate.innerText = "🚨 Error: Your browser blocks VideoEncoder.\nThis happens when opening HTML locally via file://.\nPlease host this file online (e.g. GitHub Pages) to use HTTPS.";
+                statusUpdate.innerText = "🚨 Error: Browser doesn't support WebCodecs API. Please use up-to-date Chrome, Edge, or Safari.";
                 return;
             }
 
@@ -229,10 +229,42 @@
             const duration = video.duration;
             const totalFrames = Math.floor(duration * fps);
 
+            // Dynamic codec profiles check list (from 4K High-Profile down to mobile Baseline)
+            const standardH264Codecs = [
+                'avc1.640034', // High Profile, Level 5.2 (Perfect for 4K maps)
+                'avc1.64002a', // High Profile, Level 4.2
+                'avc1.4d002a', // Main Profile, Level 4.2
+                'avc1.42E01E'  // Baseline Profile
+            ];
+
+            let chosenCodec = null;
+
+            // Probe the GPU to find the highest supported codec layout for current layout sizes
+            for (const codec of standardH264Codecs) {
+                try {
+                    const support = await VideoEncoder.isConfigSupported({
+                        codec: codec,
+                        width: canvas.width,
+                        height: canvas.height,
+                        bitrate: 14000000
+                    });
+                    if (support.supported) {
+                        chosenCodec = codec;
+                        break;
+                    }
+                } catch (e) {}
+            }
+
+            if (!chosenCodec) {
+                statusUpdate.classList.replace('text-yellow-400', 'text-red-400');
+                statusUpdate.innerText = `🚨 Resolution Error:\nYour GPU/Browser cannot encode H.264 at this texture size (${canvas.width}x${canvas.height}px).\nTry downscaling the base texture mapping under 4K limits.`;
+                resetUI();
+                return;
+            }
+
             let muxer, encoder;
 
             try {
-                // 1. Initialize MP4 Muxer Container
                 muxer = new Mp4Muxer.Muxer({
                     target: new Mp4Muxer.ArrayBufferTarget(),
                     video: {
@@ -243,44 +275,41 @@
                     fastStart: 'in-memory'
                 });
 
-                // 2. Initialize Browser Native Video Encoder
                 encoder = new VideoEncoder({
                     output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
                     error: (e) => {
                         statusUpdate.classList.replace('text-yellow-400', 'text-red-400');
-                        statusUpdate.innerText = "Encoder Error: " + e.message;
+                        statusUpdate.innerText = "Encoder Runtime Error: " + e.message;
                         resetUI();
                     }
                 });
 
-                // Configure for high-bitrate texturing profiles
                 await encoder.configure({
-                    codec: 'avc1.4d002a', // Main Profile, Level 4.2 (Highly compatible)
+                    codec: chosenCodec,
                     width: canvas.width,
                     height: canvas.height,
-                    bitrate: 12000000, 
+                    bitrate: 14000000, // 14 Mbps high bit-rate stream
                     avc: { format: 'avc' }
                 });
 
             } catch (setupError) {
                 statusUpdate.classList.replace('text-yellow-400', 'text-red-400');
-                statusUpdate.innerText = "🚨 Browser Security Block:\nWebCodecs cannot initialize over file:// protocol.\n\nTo fix this, simply upload this HTML file to any free hosting with HTTPS (like GitHub Pages or Netlify).";
+                statusUpdate.innerText = "🚨 Configuration failed:\n" + setupError.message;
                 resetUI();
                 return;
             }
 
             statusUpdate.classList.replace('text-yellow-400', 'text-red-400');
 
-            // 3. Step sequentially frame-by-frame
+            // Sequential Frame Extraction Loop
             for (let i = 0; i < totalFrames; i++) {
-                if (!isRecording) break; // Allow aborting if needed
+                if (!isRecording) break;
                 
                 video.currentTime = i / fps;
 
-                // Promise sync with safety timeout to prevent infinite freezes
                 await new Promise((resolve) => {
                     let settled = false;
-                    const timeout = setTimeout(() => { if(!settled) { settled = true; resolve(); } }, 300);
+                    const timeout = setTimeout(() => { if(!settled) { settled = true; resolve(); } }, 400);
                     video.onseeked = () => {
                         if(!settled) {
                             settled = true;
@@ -334,7 +363,7 @@
             recordBtn.disabled = false;
             setTimeout(() => {
                 if (!isRecording) statusUpdate.classList.add('hidden');
-            }, 5000);
+            }, 6000);
         }
     </script>
 </body>
