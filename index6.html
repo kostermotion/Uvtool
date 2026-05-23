@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UV Video Texture Compositor (Pro 10Mbps)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/mp4-muxer/build/mp4-muxer.js"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen p-8">
+
+    <div class="max-w-6xl mx-auto">
+        <header class="mb-8 border-b border-gray-800 pb-4">
+            <h1 class="text-3xl font-bold text-red-500">UV Video Texture Compositor</h1>
+            <p class="text-gray-400 mt-2">Production-grade tool. Safely encodes high-res texture layouts mapped strictly at 10 Mbps.</p>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div class="bg-gray-800 p-6 rounded-xl shadow-lg space-y-6 h-fit">
+                <h2 class="text-xl font-semibold border-b border-gray-700 pb-2">1. Upload Files</h2>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-400 mb-2">Base Texture (UV Map Layout)</label>
+                    <input type="file" id="imageInput" accept="image/*" class="block w-full text-sm text-gray-450 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-red-650 file:text-white hover:file:bg-red-700 cursor-pointer">
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-400 mb-2">Video Asset</label>
+                    <input type="file" id="videoInput" accept="video/*" class="block w-full text-sm text-gray-450 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-red-650 file:text-white hover:file:bg-red-700 cursor-pointer">
+                </div>
+
+                <h2 class="text-xl font-semibold border-b border-gray-700 pb-2 pt-2">2. Zone Coordinates (Pixels)</h2>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Offset X (Left)</label>
+                        <input type="number" id="posX" value="0" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-white">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Offset Y (Top)</label>
+                        <input type="number" id="posY" value="350" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-white">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Width (W)</label>
+                        <input type="number" id="posW" value="435" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-white">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Height (H)</label>
+                        <input type="number" id="posH" value="230" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-white">
+                    </div>
+                </div>
+
+                <div class="bg-gray-750 p-3 rounded text-xs text-gray-400 space-y-2">
+                    <p>🔄 <span class="text-red-400 font-semibold">Auto-Inversion:</span> The video automatically flips horizontally and vertically (180°) inside the target zone.</p>
+                    <p id="textureInfo">Source Texture Size: Not loaded</p>
+                </div>
+
+                <button id="recordBtn" disabled class="w-full py-3 px-4 bg-gray-600 text-gray-400 font-bold rounded-lg cursor-not-allowed transition duration-200">
+                    Compile MP4
+                </button>
+                <div id="statusUpdate" class="text-center text-sm font-medium text-red-400 hidden whitespace-pre-wrap bg-gray-900 p-3 rounded border border-gray-700">Initializing Hardware Modules...</div>
+            </div>
+
+            <div class="lg:col-span-2 bg-gray-800 p-6 rounded-xl shadow-lg flex flex-col items-center justify-center">
+                <h2 class="text-xl font-semibold border-b border-gray-700 pb-2 w-full mb-4 text-left">UV Map Canvas Preview</h2>
+                <div class="relative max-w-full max-h-[70vh] overflow-auto border-2 border-dashed border-gray-700 rounded-lg p-2 bg-gray-950">
+                    <canvas id="previewCanvas" class="max-w-full h-auto block mx-auto"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const imageInput = document.getElementById('imageInput');
+        const videoInput = document.getElementById('videoInput');
+        const canvas = document.getElementById('previewCanvas');
+        const ctx = canvas.getContext('2d');
+        const recordBtn = document.getElementById('recordBtn');
+        const statusUpdate = document.getElementById('statusUpdate');
+        const textureInfo = document.getElementById('textureInfo');
+
+        const inpX = document.getElementById('posX');
+        const inpY = document.getElementById('posY');
+        const inpW = document.getElementById('posW');
+        const inpH = document.getElementById('posH');
+
+        let bgImage = new Image();
+        let video = document.createElement('video');
+        video.muted = true;
+        video.loop = true;
+        video.playsInline = true;
+
+        let isImageLoaded = false;
+        let isVideoLoaded = false;
+        let isRecording = false; 
+        let animationFrameId = null;
+
+        function checkReady() {
+            if (isImageLoaded && isVideoLoaded) {
+                recordBtn.disabled = false;
+                recordBtn.classList.remove('bg-gray-600', 'text-gray-400', 'cursor-not-allowed');
+                recordBtn.classList.add('bg-red-600', 'text-white', 'hover:bg-red-500');
+            }
+        }
+
+        function startPreviewLoop() {
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+            animationFrameId = requestAnimationFrame(drawFrame);
+        }
+
+        function drawFrame() {
+            if (!isImageLoaded) {
+                animationFrameId = requestAnimationFrame(drawFrame);
+                return;
+            }
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(bgImage, 0, 0);
+
+            const x = parseInt(inpX.value) || 0;
+            const y = parseInt(inpY.value) || 0;
+            const w = parseInt(inpW.value) || 100;
+            const h = parseInt(inpH.value) || 100;
+
+            if (isVideoLoaded) {
+                ctx.save();
+                ctx.translate(x + w / 2, y + h / 2);
+                ctx.scale(-1, -1); 
+                ctx.drawImage(video, -w / 2, -h / 2, w, h);
+                ctx.restore();
+            }
+
+            if (!isRecording) {
+                const baseScale = canvas.width;
+                const dynamicLineWidth = Math.max(3, Math.round(baseScale * 0.002));
+                const dynamicFontSize = Math.max(16, Math.round(baseScale * 0.015));
+
+                if (!isVideoLoaded) {
+                    ctx.fillStyle = 'rgba(239, 68, 68, 0.35)';
+                    ctx.fillRect(x, y, w, h);
+                    ctx.fillStyle = '#ef4444';
+                    ctx.font = `bold ${dynamicFontSize}px sans-serif`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText('Video Integration Zone', x + w / 2, y + h / 2);
+                }
+                ctx.strokeStyle = '#ef4444';
+                ctx.lineWidth = dynamicLineWidth;
+                ctx.setLineDash([Math.round(baseScale * 0.005), Math.round(baseScale * 0.003)]);
+                ctx.strokeRect(x, y, w, h);
+                ctx.setLineDash([]);
+            }
+
+            if (!isRecording) {
+                animationFrameId = requestAnimationFrame(drawFrame);
+            }
+        }
+
+        imageInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                bgImage.src = event.target.result;
+                bgImage.onload = () => {
+                    canvas.width = bgImage.naturalWidth;
+                    canvas.height = bgImage.naturalHeight;
+                    
+                    textureInfo.innerText = `Source Texture Size: ${canvas.width}x${canvas.height} px`;
+                    
+                    inpX.value = 0;
+                    inpY.value = Math.round(canvas.height * 0.34);
+                    inpW.value = Math.round(canvas.width * 0.425);
+                    inpH.value = Math.round(canvas.height * 0.225);
+
+                    isImageLoaded = true;
+                    startPreviewLoop();
+                    checkReady();
+                };
+            };
+            reader.readAsDataURL(file);
+        });
+
+        videoInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const url = URL.createObjectURL(file);
+            video.src = url;
+            video.onloadeddata = () => {
+                video.play();
+                isVideoLoaded = true;
+                startPreviewLoop();
+                checkReady();
+            };
+        });
+
+        [inpX, inpY, inpW, inpH].forEach(input => {
+            input.addEventListener('input', () => {
+                if (!isRecording && isImageLoaded) startPreviewLoop();
+            });
+        });
+
+        startPreviewLoop();
+
+        // High-performance WebCodecs engine pass
+        recordBtn.addEventListener('click', async () => {
+            if (!isImageLoaded || !isVideoLoaded) return;
+
+            statusUpdate.classList.remove('hidden');
+            statusUpdate.classList.replace('text-red-400', 'text-yellow-400');
+
+            // 1. Check if Mp4Muxer loaded successfully (Bypass AdBlocker issues)
+            if (typeof Mp4Muxer === 'undefined') {
+                statusUpdate.classList.replace('text-yellow-400', 'text-red-400');
+                statusUpdate.innerText = "🚨 Critical Error: MP4 library blocked by network.\nPlease disable any AdBlockers/VPNs on this page and refresh.";
+                return;
+            }
+
+            // 2. Check Browser API support
+            if (!window.VideoEncoder) {
+                statusUpdate.classList.replace('text-yellow-400', 'text-red-400');
+                statusUpdate.innerText = "🚨 Architecture Error: Browser does not support WebCodecs API.\nPlease use a modern version of Chrome or Edge.";
+                return;
+            }
+
+            isRecording = true;
+            recordBtn.disabled = true;
+            statusUpdate.innerText = "Probing GPU Codec capabilities...";
+            
+            cancelAnimationFrame(animationFrameId);
+            video.pause();
+
+            const fps = 30;
+            const duration = video.duration;
+            const totalFrames = Math.floor(duration * fps);
+            const targetBitrate = 10000000; // Strictly 10 Mbps
+
+            // Force dimensions to be even numbers (required by H.264)
+            let idealWidth = bgImage.naturalWidth % 2 === 0 ? bgImage.naturalWidth : bgImage.naturalWidth - 1;
+            let idealHeight = bgImage.naturalHeight % 2 === 0 ? bgImage.naturalHeight : bgImage.naturalHeight - 1;
+
+            const codecsToTry = ['avc1.640034', 'avc1.640028', 'avc1.4d002a', 'avc1.42E01E'];
+            let chosenCodec = null;
+            let finalWidth = idealWidth;
+            let finalHeight = idealHeight;
+            let isDownscaled = false;
+
+            // Probe Phase 1: Try Native Native Resolution (e.g., 4096x4096)
+            for (const codec of codecsToTry) {
+                try {
+                    const support = await VideoEncoder.isConfigSupported({ codec, width: finalWidth, height: finalHeight, bitrate: targetBitrate });
+                    if (support.supported) {
+                        chosenCodec = codec; break;
+                    }
+                } catch(e) {}
+            }
+
+            // Probe Phase 2: If GPU rejects 4K square, fallback to highly stable 2048x2048
+            if (!chosenCodec) {
+                finalWidth = Math.min(2048, idealWidth);
+                finalHeight = Math.min(2048, idealHeight);
+                isDownscaled = true;
+                
+                for (const codec of codecsToTry) {
+                    try {
+                        const support = await VideoEncoder.isConfigSupported({ codec, width: finalWidth, height: finalHeight, bitrate: targetBitrate });
+                        if (support.supported) {
+                            chosenCodec = codec; break;
+                        }
+                    } catch(e) {}
+                }
+            }
+
+            if (!chosenCodec) {
+                statusUpdate.classList.replace('text-yellow-400', 'text-red-400');
+                statusUpdate.innerText = "🚨 GPU Error: Your device cannot hardware-encode this aspect ratio.\nPlease try on a different machine.";
+                resetUI();
+                return;
+            }
+
+            // Calculate scaling factors in case we fell back to 2048px
+            const scaleFactorX = finalWidth / bgImage.naturalWidth;
+            const scaleFactorY = finalHeight / bgImage.naturalHeight;
+
+            // Prepare export canvas with final approved dimensions
+            const exportCanvas = document.createElement('canvas');
+            exportCanvas.width = finalWidth;
+            exportCanvas.height = finalHeight;
+            const eCtx = exportCanvas.getContext('2d');
+
+            let muxer, encoder;
+
+            try {
+                muxer = new Mp4Muxer.Muxer({
+                    target: new Mp4Muxer.ArrayBufferTarget(),
+                    video: { codec: 'avc', width: finalWidth, height: finalHeight },
+                    fastStart: 'in-memory'
+                });
+
+                encoder = new VideoEncoder({
+                    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+                    error: (e) => {
+                        alert("Encoder frame crash: " + e.message);
+                        resetUI();
+                    }
+                });
+
+                await encoder.configure({
+                    codec: chosenCodec, 
+                    width: finalWidth,
+                    height: finalHeight,
+                    bitrate: targetBitrate,
+                    avc: { format: 'avc' }
+                });
+
+            } catch (setupError) {
+                statusUpdate.classList.replace('text-yellow-400', 'text-red-400');
+                statusUpdate.innerText = "🚨 Pipeline failed to start: " + setupError.message;
+                resetUI();
+                return;
+            }
+
+            statusUpdate.classList.replace('text-yellow-400', 'text-emerald-400');
+
+            // Render loop
+            for (let i = 0; i < totalFrames; i++) {
+                if (!isRecording) break;
+
+                video.currentTime = i / fps;
+
+                // Rock-solid frame synchronization
+                await new Promise((resolve) => {
+                    let settled = false;
+                    const timeout = setTimeout(() => { if(!settled) { settled = true; resolve(); } }, 400);
+                    video.onseeked = () => {
+                        if(!settled) { settled = true; clearTimeout(timeout); resolve(); }
+                    };
+                });
+
+                // Clear and draw background scaled securely
+                eCtx.clearRect(0, 0, finalWidth, finalHeight);
+                eCtx.drawImage(bgImage, 0, 0, finalWidth, finalHeight);
+
+                // Map video coordinates mathematically safely
+                const scaledX = (parseInt(inpX.value) || 0) * scaleFactorX;
+                const scaledY = (parseInt(inpY.value) || 0) * scaleFactorY;
+                const scaledW = (parseInt(inpW.value) || 100) * scaleFactorX;
+                const scaledH = (parseInt(inpH.value) || 100) * scaleFactorY;
+
+                eCtx.save();
+                eCtx.translate(scaledX + scaledW / 2, scaledY + scaledH / 2);
+                eCtx.scale(-1, -1);
+                eCtx.drawImage(video, -scaledW / 2, -scaledH / 2, scaledW, scaledH);
+                eCtx.restore();
+
+                const timestampMicros = Math.round((i * 1000000) / fps);
+                const frame = new VideoFrame(exportCanvas, { timestamp: timestampMicros });
+                
+                const insertKeyframe = i % (fps * 2) === 0;
+                encoder.encode(frame, { keyFrame: insertKeyframe });
+                frame.close();
+
+                const progress = Math.round((i / totalFrames) * 100);
+                const rezText = isDownscaled ? " (Auto-Scaled to 2K)" : "";
+                statusUpdate.innerText = `Compiling MP4 Map at 10Mbps${rezText}: ${progress}%`;
+            }
+
+            if (!isRecording) return;
+
+            statusUpdate.innerText = "Finalizing master container...";
+            
+            try {
+                await encoder.flush();
+                muxer.finalize();
+
+                const buffer = muxer.target.buffer;
+                const blob = new Blob([buffer], { type: 'video/mp4' });
+                const url = URL.createObjectURL(blob);
+
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `uv_animated_texture_10mbps.mp4`;
+                a.click();
+            } catch (exportError) {
+                statusUpdate.classList.replace('text-emerald-400', 'text-red-400');
+                statusUpdate.innerText = "File save failed: " + exportError.message;
+            }
+
+            resetUI();
+        });
+
+        function resetUI() {
+            isRecording = false;
+            video.loop = true;
+            video.play();
+            startPreviewLoop();
+            recordBtn.disabled = false;
+            setTimeout(() => {
+                if (!isRecording) statusUpdate.classList.add('hidden');
+            }, 5000);
+        }
+    </script>
+</body>
+</html>
